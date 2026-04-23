@@ -1,0 +1,23 @@
+# 用户上传的文件
+uploads/
+
+# 测试数据文件
+*.xlsx
+*.xls
+*.csv
+
+# Docker 打包产物
+*.tar.gz
+*.tar
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# 编辑器
+.idea/
+.vscode/
+*.swp

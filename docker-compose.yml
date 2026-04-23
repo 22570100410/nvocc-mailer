@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: nvocc-mailer-db
+    restart: always
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: Miluo@123
+      MYSQL_DATABASE: nvocc_mailer
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - mailer-net
+
+  app:
+    image: nvocc-mailer:1.0.0
+    container_name: nvocc-mailer-app
+    restart: always
+    ports:
+      - "5001:5000"
+    depends_on:
+      - db
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: nvocc_mailer
+      DB_USER: root
+      DB_PASSWORD: Miluo@123
+      LOGIN_USERNAME: admin
+      LOGIN_PASSWORD: Miluo@2026
+      SECRET_KEY: nvocc-mailer-2026-secret-key
+      # SMTP 配置（部署时填写）
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM_NAME: 航交所
+      SMTP_USE_SSL: "false"
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - mailer-net
+
+volumes:
+  db_data:
+  uploads:
+
+networks:
+  mailer-net:
+    driver: bridge

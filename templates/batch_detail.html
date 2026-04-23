@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}发送详情 #{{ batch.id }}{% endblock %}
+
+{% block content %}
+{% set bounce_count = records | selectattr('status', 'equalto', 'bounced') | list | length %}
+<div class="d-flex align-items-center mb-3 gap-3 flex-wrap">
+  <a href="{{ url_for('history') }}" class="btn btn-sm btn-outline-secondary">← 返回</a>
+  <h5 class="fw-bold mb-0">发送详情 #{{ batch.id }}</h5>
+  <div class="ms-auto d-flex gap-2 flex-wrap">
+    {% if batch.status in ('interrupted', 'paused') %}
+    <button class="btn btn-sm btn-outline-primary" onclick="resumeBatch({{ batch.id }}, this)">恢复发送（{{ batch.total_count - batch.success_count - batch.fail_count }} 封待发）</button>
+    {% endif %}
+    {% if batch.status == 'done' and batch.fail_count > 0 %}
+    <button class="btn btn-sm btn-outline-warning" onclick="retryBatch({{ batch.id }}, this)">重试失败（{{ batch.fail_count }} 封）</button>
+    {% endif %}
+    {% if batch.status == 'done' and batch.success_count > 0 %}
+    <button class="btn btn-sm btn-outline-info" id="checkBounceBtn" onclick="checkBounces({{ batch.id }}, this)">检查退信</button>
+    {% endif %}
+    {% if bounce_count > 0 %}
+    <a href="{{ url_for('download_bounces', batch_id=batch.id) }}" class="btn btn-sm btn-outline-danger">下载退信名单（{{ bounce_count }} 封）</a>
+    {% endif %}
+  </div>
+</div>
+<div id="bounceMsg" class="alert d-none mb-3"></div>
+
+<!-- 批次摘要 -->
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="text-muted small">主题</div>
+        <div class="fw-bold">{{ batch.subject }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="text-muted small">发送时间</div>
+        <div>{{ batch.created_at.strftime('%Y-%m-%d %H:%M:%S') if batch.created_at else '-' }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="text-muted small">完成时间</div>
+        <div>{{ batch.finished_at.strftime('%Y-%m-%d %H:%M:%S') if batch.finished_at else '-' }}</div>
+      </div>
+      <div class="col-12">
+        <div class="d-flex gap-4">
+          <span>总数：<strong>{{ batch.total_count }}</strong></span>
+          <span class="text-success">✓ 成功：<strong>{{ batch.success_count }}</strong></span>
+          <span class="text-danger">✗ 失败：<strong>{{ batch.fail_count }}</strong></span>
+          {% if bounce_count > 0 %}
+          <span class="text-warning">↩ 退信：<strong>{{ bounce_count }}</strong></span>
+          {% endif %}
+          <span>
+            状态：
+            {% if batch.status == 'sending' %}
+              <span class="badge" style="background:#fd7e14">发送中</span>
+            {% elif batch.status == 'paused' %}
+              <span class="badge bg-warning text-dark">已暂停</span>
+            {% elif batch.status == 'interrupted' %}
+              <span class="badge bg-secondary">已中断</span>
+            {% else %}
+              <span class="badge bg-success">已完成</span>
+            {% endif %}
+          </span>
+        </div>
+      </div>
+      <div class="col-12">
+        <div class="text-muted small">邮件正文</div>
+        <div class="bg-light rounded p-3 mt-1 border" style="font-size:.9rem">{{ batch.body | safe }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 明细表格 -->
+<div class="card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-bold">收件人明细（{{ records|length }} 条）</span>
+    <div class="btn-group btn-group-sm">
+      <button class="btn btn-outline-secondary active" onclick="filterRecords('all', this)">全部</button>
+      <button class="btn btn-outline-success" onclick="filterRecords('success', this)">成功</button>
+      <button class="btn btn-outline-danger"  onclick="filterRecords('failed', this)">失败</button>
+      <button class="btn btn-outline-warning" onclick="filterRecords('bounced', this)">退信</button>
+    </div>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 align-middle" id="recordTable">
+      <thead class="table-light">
+        <tr>
+          <th>#</th>
+          <th>公司名</th>
+          <th>邮箱</th>
+          <th>状态</th>
+          <th>发送时间</th>
+          <th>失败原因</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in records %}
+      <tr data-status="{{ r.status }}">
+        <td class="text-muted small">{{ loop.index }}</td>
+        <td>{{ r.company or '-' }}</td>
+        <td>{{ r.email }}</td>
+        <td>
+          {% if r.status == 'success' %}
+            <span class="badge bg-success">成功</span>
+          {% elif r.status == 'failed' %}
+            <span class="badge bg-danger">失败</span>
+          {% elif r.status == 'bounced' %}
+            <span class="badge bg-warning text-dark">退信</span>
+          {% else %}
+            <span class="badge bg-secondary">等待</span>
+          {% endif %}
+        </td>
+        <td class="small">{{ r.sent_at.strftime('%H:%M:%S') if r.sent_at else '-' }}</td>
+        <td class="small text-danger">{{ r.error_msg or '' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterRecords(status, btn) {
+  document.querySelectorAll('.btn-group .btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#recordTable tbody tr').forEach(tr => {
+    tr.style.display = (status === 'all' || tr.dataset.status === status) ? '' : 'none';
+  });
+}
+
+async function retryBatch(batchId, btn) {
+  if (!confirm('确认重新发送所有失败邮件？')) return;
+  btn.disabled = true;
+  btn.textContent = '处理中...';
+  const resp = await fetch(`/history/${batchId}/retry`, {method: 'POST'});
+  const data = await resp.json();
+  if (data.error) { alert(data.error); btn.disabled = false; return; }
+  window.location.href = `/history/${data.batch_id}`;
+}
+
+async function checkBounces(batchId, btn) {
+  btn.disabled = true;
+  btn.textContent = '检查中...';
+  const msg = document.getElementById('bounceMsg');
+  msg.className = 'alert alert-info mb-3';
+  msg.textContent = '正在连接邮箱检查退信，请稍候（约10-30秒）...';
+  msg.classList.remove('d-none');
+
+  const resp = await fetch(`/history/${batchId}/check_bounces`, {method: 'POST'});
+  const data = await resp.json();
+
+  btn.disabled = false;
+  btn.textContent = '检查退信';
+
+  if (data.error) {
+    msg.className = 'alert alert-danger mb-3';
+    msg.textContent = '检查失败：' + data.error;
+    return;
+  }
+
+  if (data.bounced > 0) {
+    msg.className = 'alert alert-warning mb-3';
+    msg.textContent = `发现 ${data.bounced} 封退信，页面即将刷新...`;
+    setTimeout(() => location.reload(), 1500);
+  } else {
+    msg.className = 'alert alert-success mb-3';
+    msg.textContent = '未发现退信邮件。';
+  }
+}
+
+async function resumeBatch(batchId, btn) {
+  if (!confirm('确认从中断处继续发送剩余邮件？')) return;
+  btn.disabled = true;
+  btn.textContent = '处理中...';
+  const resp = await fetch(`/history/${batchId}/resume`, {method: 'POST'});
+  const data = await resp.json();
+  if (data.error) { alert(data.error); btn.disabled = false; btn.textContent = '恢复发送'; return; }
+  window.location.href = `/history/${data.batch_id}`;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}发送邮件{% endblock %}
+
+{% block head %}
+<link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
+<style>
+.ql-snow .ql-picker.ql-size .ql-picker-label::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item::before { content: '正文'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='12px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='12px']::before { content: '小五'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='14px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='14px']::before { content: '五号'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='16px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='16px']::before { content: '小四'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='19px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='19px']::before { content: '四号'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='21px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='21px']::before { content: '小三'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='24px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='24px']::before { content: '三号'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='29px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='29px']::before { content: '小二'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='32px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='32px']::before { content: '二号'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='35px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='35px']::before { content: '小一'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='48px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='48px']::before { content: '小初'; }
+.ql-snow .ql-picker.ql-size .ql-picker-label[data-value='56px']::before,
+.ql-snow .ql-picker.ql-size .ql-picker-item[data-value='56px']::before { content: '初号'; }
+.ql-size-12px { font-size: 12px; }
+.ql-size-14px { font-size: 14px; }
+.ql-size-16px { font-size: 16px; }
+.ql-size-19px { font-size: 19px; }
+.ql-size-21px { font-size: 21px; }
+.ql-size-24px { font-size: 24px; }
+.ql-size-29px { font-size: 29px; }
+.ql-size-32px { font-size: 32px; }
+.ql-size-35px { font-size: 35px; }
+.ql-size-48px { font-size: 48px; }
+.ql-size-56px { font-size: 56px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+
+  <!-- 左栏：名单上传 + 列映射 -->
+  <div class="col-lg-5">
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="fw-bold mb-3">步骤一：上传名单</h6>
+        <div id="dropZone"
+             class="border border-2 border-dashed rounded p-4 text-center text-muted"
+             style="cursor:pointer; transition:.2s"
+             onclick="document.getElementById('fileInput').click()"
+             ondragover="event.preventDefault();this.style.background='#e8f4fd'"
+             ondragleave="this.style.background=''"
+             ondrop="handleDrop(event)">
+          <div style="font-size:2rem">📂</div>
+          <div>点击或拖拽上传</div>
+          <small>支持 Excel（xlsx/xls）、CSV</small>
+        </div>
+        <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" class="d-none" onchange="uploadFile(this.files[0])">
+        <div id="fileInfo" class="mt-2 text-success small d-none"></div>
+        <div id="uploadError" class="mt-2 text-danger small d-none"></div>
+      </div>
+    </div>
+
+    <div class="card" id="mappingCard" style="display:none!important">
+      <div class="card-body">
+        <h6 class="fw-bold mb-3">步骤二：列映射</h6>
+        <div class="mb-2">
+          <label class="form-label mb-1">邮箱列 <span class="text-danger">*</span></label>
+          <select id="emailCol" class="form-select form-select-sm"></select>
+        </div>
+        <div class="mb-2">
+          <label class="form-label mb-1">公司名列（用于 {company} 占位符）</label>
+          <select id="companyCol" class="form-select form-select-sm">
+            <option value="">— 不选 —</option>
+          </select>
+        </div>
+        <div id="previewWrap" class="mt-3">
+          <small class="text-muted">数据预览（前3行）：</small>
+          <div class="table-responsive mt-1">
+            <table id="previewTable" class="table table-sm table-bordered mb-0" style="font-size:.8rem"></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右栏：邮件内容 + 草稿 -->
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-body">
+        <h6 class="fw-bold mb-3">步骤三：邮件内容</h6>
+        <div class="mb-2">
+          <label class="form-label mb-1">主题 <span class="text-danger">*</span></label>
+          <input id="subject" class="form-control" placeholder="请输入邮件主题">
+        </div>
+        <div class="mb-2">
+          <label class="form-label mb-1">
+            正文 <span class="text-danger">*</span>
+            <small class="text-muted ms-2">可用 <code>{company}</code> 插入公司名</small>
+          </label>
+          <div id="bodyEditor" style="height:240px;background:#fff;border-radius:0 0 4px 4px"></div>
+        </div>
+
+        <!-- 草稿区 -->
+        <div class="border rounded p-3 mt-3 bg-light">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="text-muted small fw-bold">草稿</span>
+            <input id="draftName" class="form-control form-control-sm" style="width:160px" placeholder="草稿名称">
+            <button class="btn btn-sm btn-outline-secondary" onclick="saveDraft()">保存草稿</button>
+            <select id="draftSelect" class="form-select form-select-sm" style="width:180px" onchange="loadDraft(this.value)">
+              <option value="">— 加载草稿 —</option>
+              {% for d in drafts %}
+              <option value="{{ d.id }}">{{ d.name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteDraft()" id="deleteDraftBtn" style="display:none">删除</button>
+          </div>
+          <div id="draftMsg" class="mt-1 small d-none"></div>
+        </div>
+
+        <button id="sendBtn" class="btn mt-3 w-100 fw-bold"
+                style="background:#1a3c6e;color:#fff;font-size:1rem"
+                onclick="startSend()">
+          发送邮件
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 发送进度 -->
+<div id="progressSection" class="card mt-4 d-none">
+  <div class="card-body">
+    <h6 class="fw-bold mb-3">发送进度</h6>
+    <div class="progress mb-3" style="height:22px">
+      <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+           style="width:0%;background:#1a3c6e" role="progressbar">0%</div>
+    </div>
+    <div class="d-flex gap-4 mb-3 align-items-center">
+      <span>已发送：<strong id="statsSent">0/0</strong></span>
+      <span class="text-success">✓ 成功：<strong id="statsSuccess">0</strong></span>
+      <span class="text-danger">✗ 失败：<strong id="statsFail">0</strong></span>
+      <button id="pauseBtn" class="btn btn-sm btn-outline-warning ms-auto" onclick="pauseSend()">暂停</button>
+    </div>
+    <div id="statusText" class="text-muted small">发送中，请稍候...</div>
+    <div id="doneMsg" class="d-none mt-2">
+      <span class="text-success fw-bold">✓ 发送完成！</span>
+      <a id="viewDetailLink" href="#" class="ms-3 btn btn-sm btn-outline-primary">查看详情</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
+<script>
+let currentDraftId = null;
+let sendingBatchId = null;
+let pollTimer = null;
+let columns = [];
+
+const SizeStyle = Quill.import('attributors/style/size');
+SizeStyle.whitelist = ['12px','14px','16px','19px','21px','24px','29px','32px','35px','48px','56px'];
+Quill.register(SizeStyle, true);
+
+const quill = new Quill('#bodyEditor', {
+  theme: 'snow',
+  placeholder: '请输入邮件正文\n\n例：尊敬的 {company}，您好！',
+  modules: {
+    toolbar: [
+      ['bold', 'italic', 'underline'],
+      [{ 'color': [] }],
+      [{ 'size': ['12px','14px','16px','19px','21px','24px','29px','32px','35px','48px','56px'] }],
+      [{ 'align': [] }],
+      ['clean']
+    ]
+  }
+});
+
+// ── 文件上传 ──────────────────────────────────────────────
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').style.background = '';
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const info = document.getElementById('fileInfo');
+  const err  = document.getElementById('uploadError');
+  info.classList.add('d-none');
+  err.classList.add('d-none');
+
+  const resp = await fetch('/upload', {method: 'POST', body: fd});
+  const data = await resp.json();
+  if (data.error) {
+    err.textContent = data.error;
+    err.classList.remove('d-none');
+    return;
+  }
+
+  columns = data.columns;
+  info.textContent = `✓ 已上传：${data.filename}（共 ${columns.length} 列）`;
+  info.classList.remove('d-none');
+
+  // 填充列下拉
+  const emailSel   = document.getElementById('emailCol');
+  const companySel = document.getElementById('companyCol');
+  emailSel.innerHTML = '';
+  companySel.innerHTML = '<option value="">— 不选 —</option>';
+  columns.forEach(c => {
+    emailSel.innerHTML   += `<option value="${c}">${c}</option>`;
+    companySel.innerHTML += `<option value="${c}">${c}</option>`;
+  });
+
+  // 尝试智能匹配
+  const emailGuess   = columns.find(c => /邮[箱件]|email|mail/i.test(c));
+  const companyGuess = columns.find(c => /公司|单位|企业|company/i.test(c));
+  if (emailGuess)   emailSel.value   = emailGuess;
+  if (companyGuess) companySel.value = companyGuess;
+
+  // 渲染预览
+  const thead = columns.map(c => `<th>${c}</th>`).join('');
+  let tbodyRows = '';
+  data.preview.forEach(row => {
+    tbodyRows += '<tr>' + row.map(v => `<td>${v}</td>`).join('') + '</tr>';
+  });
+  document.getElementById('previewTable').innerHTML =
+    `<thead class="table-light"><tr>${thead}</tr></thead><tbody>${tbodyRows}</tbody>`;
+
+  document.getElementById('mappingCard').style.setProperty('display', 'block', 'important');
+}
+
+// ── 草稿 ──────────────────────────────────────────────────
+async function saveDraft() {
+  const name    = document.getElementById('draftName').value.trim();
+  const subject = document.getElementById('subject').value.trim();
+  const body    = quill.root.innerHTML;
+  const msg     = document.getElementById('draftMsg');
+
+  if (!name) { showDraftMsg('请填写草稿名称', 'danger'); return; }
+
+  const resp = await fetch('/draft/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: currentDraftId, name, subject, body}),
+  });
+  const data = await resp.json();
+  if (data.error) { showDraftMsg(data.error, 'danger'); return; }
+
+  currentDraftId = data.id;
+  showDraftMsg('草稿已保存', 'success');
+  document.getElementById('deleteDraftBtn').style.display = '';
+  await refreshDraftList();
+}
+
+async function loadDraft(id) {
+  if (!id) return;
+  const resp = await fetch(`/draft/${id}`);
+  const data = await resp.json();
+  if (data.error) return;
+  document.getElementById('subject').value   = data.subject;
+  quill.root.innerHTML = data.body || '';
+  document.getElementById('draftName').value = data.name;
+  currentDraftId = data.id;
+  document.getElementById('deleteDraftBtn').style.display = '';
+}
+
+async function deleteDraft() {
+  if (!currentDraftId) return;
+  if (!confirm('确认删除该草稿？')) return;
+  await fetch(`/draft/${currentDraftId}`, {method: 'DELETE'});
+  currentDraftId = null;
+  document.getElementById('draftName').value = '';
+  document.getElementById('deleteDraftBtn').style.display = 'none';
+  showDraftMsg('草稿已删除', 'secondary');
+  await refreshDraftList();
+}
+
+async function refreshDraftList() {
+  const resp = await fetch('/draft/list');
+  const list = await resp.json();
+  const sel  = document.getElementById('draftSelect');
+  sel.innerHTML = '<option value="">— 加载草稿 —</option>';
+  list.forEach(d => { sel.innerHTML += `<option value="${d.id}">${d.name}</option>`; });
+  if (currentDraftId) sel.value = currentDraftId;
+}
+
+function showDraftMsg(text, type) {
+  const el = document.getElementById('draftMsg');
+  el.className = `mt-1 small text-${type}`;
+  el.textContent = text;
+  el.classList.remove('d-none');
+  setTimeout(() => el.classList.add('d-none'), 3000);
+}
+
+// ── 发送 ──────────────────────────────────────────────────
+async function startSend() {
+  const emailCol   = document.getElementById('emailCol').value;
+  const companyCol = document.getElementById('companyCol').value;
+  const subject    = document.getElementById('subject').value.trim();
+  const body       = quill.root.innerHTML;
+  const bodyText   = quill.getText().trim();
+
+  if (!emailCol)  { alert('请先上传文件并选择邮箱列'); return; }
+  if (!subject)   { alert('请填写邮件主题'); return; }
+  if (!bodyText)  { alert('请填写邮件正文'); return; }
+  if (!confirm(`确认发送邮件？`)) return;
+
+  document.getElementById('sendBtn').disabled = true;
+  const section = document.getElementById('progressSection');
+  section.classList.remove('d-none');
+  document.getElementById('doneMsg').classList.add('d-none');
+  document.getElementById('statusText').textContent = '发送中，请稍候...';
+
+  const resp = await fetch('/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({email_col: emailCol, company_col: companyCol, subject, body}),
+  });
+  const data = await resp.json();
+
+  if (data.error) {
+    alert(data.error);
+    document.getElementById('sendBtn').disabled = false;
+    section.classList.add('d-none');
+    return;
+  }
+
+  sendingBatchId = data.batch_id;
+  pollTimer = setInterval(pollStatus, 2000);
+}
+
+async function pauseSend() {
+  const btn = document.getElementById('pauseBtn');
+  btn.disabled = true;
+  btn.textContent = '暂停中...';
+  await fetch(`/history/${sendingBatchId}/pause`, {method: 'POST'});
+}
+
+async function pollStatus() {
+  const resp = await fetch(`/send/${sendingBatchId}/status`);
+  const data = await resp.json();
+  const batch = data.batch;
+  if (!batch) return;
+
+  const total = batch.total_count;
+  const sent  = batch.success_count + batch.fail_count;
+  const pct   = total > 0 ? Math.round(sent / total * 100) : 0;
+
+  const bar = document.getElementById('progressBar');
+  bar.style.width    = pct + '%';
+  bar.textContent    = pct + '%';
+  document.getElementById('statsSent').textContent    = `${sent}/${total}`;
+  document.getElementById('statsSuccess').textContent = batch.success_count;
+  document.getElementById('statsFail').textContent    = batch.fail_count;
+
+  if (batch.status === 'done' || batch.status === 'paused') {
+    clearInterval(pollTimer);
+    bar.classList.remove('progress-bar-animated');
+    document.getElementById('pauseBtn').classList.add('d-none');
+    document.getElementById('statusText').textContent = '';
+    document.getElementById('doneMsg').classList.remove('d-none');
+    document.getElementById('viewDetailLink').href = `/history/${sendingBatchId}`;
+    document.getElementById('sendBtn').disabled = false;
+    if (batch.status === 'paused') {
+      document.getElementById('doneMsg').innerHTML =
+        `<span class="text-warning fw-bold">⏸ 已暂停</span><a href="/history/${sendingBatchId}" class="ms-3 btn btn-sm btn-outline-primary">查看详情</a>`;
+    }
+  }
+}
+</script>
+{% endblock %}
