@@ -32,13 +32,18 @@ services:
       LOGIN_USERNAME: admin
       LOGIN_PASSWORD: Miluo@2026
       SECRET_KEY: nvocc-mailer-2026-secret-key
-      # SMTP 配置（部署时填写）
-      SMTP_HOST: smtp.gmail.com
-      SMTP_PORT: 587
-      SMTP_USER: ""
-      SMTP_PASSWORD: ""
+      TZ: Asia/Shanghai
+      # SMTP（本地测试用 QQ 邮箱）
+      SMTP_HOST: smtp.qq.com
+      SMTP_PORT: 465
+      SMTP_USER: 464197787@qq.com
+      SMTP_PASSWORD: sgpodacqbqprcaaj
       SMTP_FROM_NAME: 航交所
-      SMTP_USE_SSL: "false"
+      SMTP_USE_SSL: "true"
+      # POP3（退信检测）
+      POP3_HOST: pop.qq.com
+      POP3_PORT: 995
+      POP3_USE_SSL: "true"
     volumes:
       - uploads:/app/uploads
     networks:
