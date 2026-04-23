@@ -4,7 +4,7 @@ import re
 import csv
 import io
 import json
-import imaplib
+import poplib
 import email as email_lib
 import smtplib
 import threading
@@ -26,9 +26,6 @@ app.secret_key = config.SECRET_KEY
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# 主动暂停标志：{batch_id: True} 表示该批次请求暂停
-_pause_flags = {}
 
 
 def migrate_db():
@@ -381,22 +378,19 @@ def _do_send(batch_id, recipients, subject, body):
         finally:
             db.close()
 
-        # 每封发完后检查是否请求暂停
-        if _pause_flags.pop(batch_id, False):
+        # 每封发完后查数据库，检查是否被请求暂停
+        db = get_db()
+        try:
+            with db.cursor() as cur:
+                cur.execute('SELECT status FROM send_batch WHERE id=%s', (batch_id,))
+                row = cur.fetchone()
+        finally:
+            db.close()
+        if row and row['status'] == 'paused':
             try:
                 smtp_conn.quit()
             except Exception:
                 pass
-            db = get_db()
-            try:
-                with db.cursor() as cur:
-                    cur.execute(
-                        'UPDATE send_batch SET status="paused" WHERE id=%s',
-                        (batch_id,),
-                    )
-                db.commit()
-            finally:
-                db.close()
             return
 
     try:
@@ -524,7 +518,16 @@ def retry_batch(batch_id):
 @app.route('/history/<int:batch_id>/pause', methods=['POST'])
 @login_required
 def pause_batch(batch_id):
-    _pause_flags[batch_id] = True
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                'UPDATE send_batch SET status="paused" WHERE id=%s AND status="sending"',
+                (batch_id,),
+            )
+        db.commit()
+    finally:
+        db.close()
     return jsonify({'ok': True})
 
 
@@ -603,64 +606,79 @@ def check_bounces_for_batch(batch_id):
     if not success_emails:
         return 0
 
-    if config.IMAP_USE_SSL:
-        mail = imaplib.IMAP4_SSL(config.IMAP_HOST, config.IMAP_PORT)
-    else:
-        mail = imaplib.IMAP4(config.IMAP_HOST, config.IMAP_PORT)
-
-    mail.login(config.SMTP_USER, config.SMTP_PASSWORD)
-    mail.select('INBOX')
-
-    since_date = batch['created_at'].strftime('%d-%b-%Y')
+    from email.utils import parsedate_to_datetime
     batch_start = batch['created_at']
-    bounced = {}  # email -> reason
+    bounced = {}
 
-    # 搜出当天所有邮件，在 Python 里过滤退信发件人（比 IMAP FROM 搜索更兼容）
-    _, data = mail.search(None, f'SINCE {since_date}')
-    for num in data[0].split():
-        # 先只拉头部，判断时间和发件人，避免无效邮件拉全文
-        _, hdr_data = mail.fetch(num, '(RFC822.HEADER)')
-        hdr = email_lib.message_from_bytes(hdr_data[0][1])
+    if config.POP3_USE_SSL:
+        mail = poplib.POP3_SSL(config.POP3_HOST, config.POP3_PORT)
+    else:
+        mail = poplib.POP3(config.POP3_HOST, config.POP3_PORT)
 
-        date_str = hdr.get('Date', '')
-        # 跳过早于本批次发送时间的邮件
-        try:
-            from email.utils import parsedate_to_datetime
-            mail_time = parsedate_to_datetime(date_str)
-            if mail_time.timestamp() < batch_start.timestamp():
+    try:
+        mail.user(config.SMTP_USER)
+        mail.pass_(config.SMTP_PASSWORD)
+
+        num_messages = len(mail.list()[1])
+
+        for i in range(num_messages, 0, -1):
+            # 先只拉头部
+            try:
+                _, lines, _ = mail.top(i, 0)
+            except Exception:
                 continue
+            hdr = email_lib.message_from_bytes(b'\n'.join(lines))
+
+            date_str = hdr.get('Date', '')
+            try:
+                mail_time = parsedate_to_datetime(date_str)
+                if mail_time.timestamp() < batch_start.timestamp():
+                    continue  # 跳过早于本批次的邮件
+            except Exception:
+                pass
+
+            from_header = hdr.get('From', '')
+            if 'postmaster' not in from_header.lower() and 'mailer-daemon' not in from_header.lower():
+                continue
+
+            # 确认是退信，拉完整邮件
+            try:
+                _, lines, _ = mail.retr(i)
+            except Exception:
+                continue
+            msg = email_lib.message_from_bytes(b'\n'.join(lines))
+            body = _extract_email_body(msg)
+
+            # 英文退信格式：<email@domain.com>: ...（必须在 HTML 剥离前匹配，否则尖括号会被删）
+            for m in re.findall(r'<(\S+@\S+\.\S+)>:', body):
+                addr = m.strip().lower()
+                if addr in success_emails and addr not in bounced:
+                    reason_match = re.search(r'<' + re.escape(m.strip()) + r'>:\s*(.+?)(?:\n|$)', body)
+                    reason = reason_match.group(1).strip()[:200] if reason_match else '退信'
+                    bounced[addr] = reason
+
+            # 剥离 HTML 标签，处理中文格式退信（QQ 等）
+            plain = re.sub(r'<[^>]+>', ' ', body)
+            plain = re.sub(r'&[a-z]+;', ' ', plain)
+
+            # 中文退信格式
+            for m in re.findall(r'无法发送到\s+(\S+@\S+)', plain):
+                addr = m.strip('.,;()<>').lower()
+                if addr in success_emails and addr not in bounced:
+                    reason_match = re.search(r'收件人[（(]\S+[）)]\s*(.+?)(?:\n|。|$)', plain)
+                    reason = reason_match.group(1).strip()[:200] if reason_match else '退信'
+                    bounced[addr] = reason
+
+            # 通用英文格式兜底
+            for m in re.findall(r'(?:recipient|to|failed recipient)[:\s]+<?(\S+@\S+\.\S+)>?', plain, re.IGNORECASE):
+                addr = m.strip('.,;()<>').lower()
+                if addr in success_emails and addr not in bounced:
+                    bounced[addr] = '退信'
+    finally:
+        try:
+            mail.quit()
         except Exception:
             pass
-
-        from_header = hdr.get('From', '')
-        if 'postmaster' not in from_header.lower() and 'mailer-daemon' not in from_header.lower():
-            continue
-
-        # 确认是退信且时间在范围内，才拉完整正文
-        _, msg_data = mail.fetch(num, '(RFC822)')
-        raw = msg_data[0][1]
-        msg = email_lib.message_from_bytes(raw)
-
-        body = _extract_email_body(msg)
-
-        # QQ退信是HTML格式，先剥掉标签转成纯文本再解析
-        plain = re.sub(r'<[^>]+>', ' ', body)
-        plain = re.sub(r'&[a-z]+;', ' ', plain)
-        # QQ 退信格式：无法发送到 xxx@xxx.com
-        for m in re.findall(r'无法发送到\s+(\S+@\S+)', plain):
-            addr = m.strip('.,;()<>').lower()
-            if addr in success_emails:
-                reason_match = re.search(r'收件人[（(]\S+[）)]\s*(.+?)(?:\n|。|$)', plain)
-                reason = reason_match.group(1).strip()[:200] if reason_match else '退信'
-                bounced[addr] = reason
-
-        # 通用格式：recipient/to: xxx@xxx.com
-        for m in re.findall(r'(?:recipient|to)[:\s]+<?(\S+@\S+\.\S+)>?', plain, re.IGNORECASE):
-            addr = m.strip('.,;()<>').lower()
-            if addr in success_emails and addr not in bounced:
-                bounced[addr] = '退信'
-
-    mail.logout()
 
     if not bounced:
         return 0
@@ -744,8 +762,11 @@ def download_bounces(batch_id):
 
 
 # 模块加载时执行（gunicorn import 和直接运行都会触发）
-migrate_db()
-check_interrupted_batches()
+try:
+    migrate_db()
+    check_interrupted_batches()
+except Exception:
+    pass
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
